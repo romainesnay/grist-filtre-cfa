@@ -406,10 +406,49 @@ document.addEventListener('DOMContentLoaded', () => {
     saveState();
   }
 
-  function updateDisabledOptions(filtered) {
+function updateDisabledOptions(filtered) {
     const allMultiCols = [...Object.keys(tagColumns), ...Object.keys(textColumns), ...Object.keys(selectColumns)];
+    
     allMultiCols.forEach(col => {
-      const counts = countValues(filtered, col);
+      // On recalcule les données filtrées par TOUTES les autres colonnes, SAUF la colonne en cours
+      let otherFiltered = [...allRecords];
+
+      Object.keys(selectedTags).forEach(otherCol => {
+        if (otherCol === col) return; // Ignore la colonne actuelle pour permettre le cumul (OU)
+        const vals = selectedTags[otherCol];
+        if (vals && vals.length > 0) {
+          otherFiltered = otherFiltered.filter(r => cleanVal(r[otherCol]).some(v => vals.includes(v)));
+        }
+      });
+
+      Object.keys(textEls).forEach(otherCol => {
+        if (otherCol === col) return;
+        const q = (selectedTexts[otherCol] || '').toLowerCase().trim();
+        if (q) {
+          otherFiltered = otherFiltered.filter(r => String(r[otherCol] ?? '').toLowerCase().includes(q));
+        }
+      });
+
+      Object.keys(selectEls).forEach(otherCol => {
+        if (otherCol === col) return;
+        const val = selectEls[otherCol]?.value;
+        if (val) {
+          otherFiltered = otherFiltered.filter(r => cleanVal(r[otherCol]).includes(val));
+        }
+      });
+
+      const search = globalSearch.value.toLowerCase().trim();
+      if (search) {
+        otherFiltered = otherFiltered.filter(r =>
+          Object.values(r).some(v => {
+            if (!v) return false;
+            if (Array.isArray(v)) return v.some(x => String(x).toLowerCase().includes(search));
+            return String(v).toLowerCase().includes(search);
+          })
+        );
+      }
+
+      const counts = countValues(otherFiltered, col);
       document.querySelectorAll(`.filter-card[data-col="${col}"] .dd-option, .tag-group .dd-option`).forEach(opt => {
         const val = opt.dataset.value;
         if (!val) return;
