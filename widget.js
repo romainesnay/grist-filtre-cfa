@@ -12,6 +12,7 @@ document.addEventListener('DOMContentLoaded', () => {
   let textColumns = {};
   let visibleFilters = { tags: true };
   let columnsOrder = [];
+  let hideUnavailable = true;   // Activé par défaut : masque les options indisponibles
 
   const tagContainer = document.getElementById('tag-filters');
   const textContainer = document.getElementById('text-filters');
@@ -25,6 +26,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const filterCheckboxesContainer = document.getElementById('filter-checkboxes');
   const selectAllBtn = document.getElementById('select-all');
   const deselectAllBtn = document.getElementById('deselect-all');
+  const hideUnavailableOpt = document.getElementById('hide-unavailable-opt');
 
   document.addEventListener('click', (e) => {
     document.querySelectorAll('.dd-panel').forEach(panel => {
@@ -45,7 +47,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function saveState() {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({
-      selectedTags, selectedTexts, textModes, selectEls: serializeSelects(), visibleFilters
+      selectedTags, selectedTexts, textModes, selectEls: serializeSelects(), visibleFilters, hideUnavailable
     }));
   }
 
@@ -107,7 +109,6 @@ document.addEventListener('DOMContentLoaded', () => {
     });
     Object.keys(textColumns).forEach(col => {
       if (visibleFilters[col] === undefined) visibleFilters[col] = true;
-      // Par défaut : Multi-sélection avec cases à cocher !
       if (textModes[col] === undefined) textModes[col] = 'multi';
     });
   }
@@ -144,7 +145,6 @@ document.addEventListener('DOMContentLoaded', () => {
     renderTexts(allRecords);
   }
 
-  // Crée un menu déroulant à cases à cocher réutilisable (pour tags et colonnes texte en mode multi)
   function createMultiDropdown(col, uniqueValues, counts) {
     if (!selectedTags[col]) selectedTags[col] = [];
 
@@ -180,7 +180,9 @@ document.addEventListener('DOMContentLoaded', () => {
     ddSearch.addEventListener('input', () => {
       const q = ddSearch.value.toLowerCase();
       panel.querySelectorAll('.dd-option').forEach(o => {
-        o.style.display = o.dataset.value.toLowerCase().includes(q) ? 'flex' : 'none';
+        const matchesSearch = o.dataset.value.toLowerCase().includes(q);
+        const hiddenByFilter = hideUnavailable && o.dataset.unavailable === 'true';
+        o.style.display = (matchesSearch && !hiddenByFilter) ? 'flex' : 'none';
       });
     });
     panel.appendChild(ddSearch);
@@ -189,6 +191,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const opt = document.createElement('label');
       opt.className = 'dd-option';
       opt.dataset.value = val;
+      opt.dataset.unavailable = 'false';
 
       const cb = document.createElement('input');
       cb.type = 'checkbox';
@@ -236,6 +239,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
       const wrapper = document.createElement('div');
       wrapper.className = 'tag-group';
+      wrapper.dataset.col = col;
 
       const title = document.createElement('div');
       title.className = 'tag-title';
@@ -300,12 +304,10 @@ document.addEventListener('DOMContentLoaded', () => {
       const counts = countValues(records, col);
       const uniqueValues = sortAlphaNum(Object.keys(counts));
 
-      // Mode Multi-sélection (cases à cocher)
       if (mode === 'multi') {
         wrapper.appendChild(createMultiDropdown(col, uniqueValues, counts));
       }
 
-      // Mode Recherche texte
       if (mode === 'search' || mode === 'both') {
         const input = document.createElement('input');
         input.type = 'text';
@@ -320,7 +322,6 @@ document.addEventListener('DOMContentLoaded', () => {
         textEls[col] = input;
       }
 
-      // Mode Liste déroulante simple
       if (mode === 'dropdown' || mode === 'both') {
         const select = document.createElement('select');
         select.className = 'filter-multi';
@@ -347,6 +348,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
       const wrapper = document.createElement('div');
       wrapper.className = 'filter-card';
+      wrapper.dataset.col = col;
 
       const title = document.createElement('div');
       title.className = 'filter-title';
@@ -364,7 +366,6 @@ document.addEventListener('DOMContentLoaded', () => {
   function applyFilters() {
     let filtered = [...allRecords];
 
-    // Filtre par multi-sélection (tags, selects et colonnes texte en mode 'multi')
     Object.keys(selectedTags).forEach(col => {
       const vals = selectedTags[col];
       if (vals && vals.length > 0) {
@@ -372,7 +373,6 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     });
 
-    // Filtre par recherche texte
     Object.keys(textEls).forEach(col => {
       const q = (selectedTexts[col] || '').toLowerCase().trim();
       if (q) {
@@ -380,7 +380,6 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     });
 
-    // Filtre par listes déroulantes simples
     Object.keys(selectEls).forEach(col => {
       const val = selectEls[col]?.value;
       if (val) {
@@ -388,7 +387,6 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     });
 
-    // Recherche globale
     const search = globalSearch.value.toLowerCase().trim();
     if (search) {
       filtered = filtered.filter(r =>
@@ -406,15 +404,14 @@ document.addEventListener('DOMContentLoaded', () => {
     saveState();
   }
 
-function updateDisabledOptions(filtered) {
+  function updateDisabledOptions(filtered) {
     const allMultiCols = [...Object.keys(tagColumns), ...Object.keys(textColumns), ...Object.keys(selectColumns)];
     
     allMultiCols.forEach(col => {
-      // On recalcule les données filtrées par TOUTES les autres colonnes, SAUF la colonne en cours
       let otherFiltered = [...allRecords];
 
       Object.keys(selectedTags).forEach(otherCol => {
-        if (otherCol === col) return; // Ignore la colonne actuelle pour permettre le cumul (OU)
+        if (otherCol === col) return;
         const vals = selectedTags[otherCol];
         if (vals && vals.length > 0) {
           otherFiltered = otherFiltered.filter(r => cleanVal(r[otherCol]).some(v => vals.includes(v)));
@@ -449,22 +446,56 @@ function updateDisabledOptions(filtered) {
       }
 
       const counts = countValues(otherFiltered, col);
-      document.querySelectorAll(`.filter-card[data-col="${col}"] .dd-option, .tag-group .dd-option`).forEach(opt => {
+      const container = document.querySelector(`.filter-card[data-col="${col}"], .tag-group[data-col="${col}"]`);
+      if (!container) return;
+
+      const ddSearch = container.querySelector('.dd-search');
+      const searchQuery = ddSearch ? ddSearch.value.toLowerCase() : '';
+
+      container.querySelectorAll('.dd-option').forEach(opt => {
         const val = opt.dataset.value;
         if (!val) return;
         const isChecked = (selectedTags[col] || []).includes(val);
         const unavailable = !counts[val] && !isChecked;
-        opt.classList.toggle('disabled', unavailable);
+        opt.dataset.unavailable = unavailable ? 'true' : 'false';
+
         const cb = opt.querySelector('input');
         if (cb) cb.disabled = unavailable;
+
+        if (hideUnavailable) {
+          opt.classList.remove('disabled');
+          const matchesSearch = !searchQuery || val.toLowerCase().includes(searchQuery);
+          opt.style.display = (!unavailable && matchesSearch) ? 'flex' : 'none';
+        } else {
+          opt.classList.toggle('disabled', unavailable);
+          const matchesSearch = !searchQuery || val.toLowerCase().includes(searchQuery);
+          opt.style.display = matchesSearch ? 'flex' : 'none';
+        }
+      });
+
+      // Gestion des pastilles (tags ≤ 10)
+      container.querySelectorAll('.tag').forEach(tag => {
+        const val = tag.textContent;
+        const isChecked = (selectedTags[col] || []).includes(val);
+        const unavailable = !counts[val] && !isChecked;
+        if (hideUnavailable) {
+          tag.classList.remove('disabled');
+          tag.style.display = unavailable ? 'none' : 'inline-block';
+        } else {
+          tag.style.display = 'inline-block';
+          tag.classList.toggle('disabled', unavailable);
+        }
       });
     });
 
+    // Gestion des listes déroulantes simples (<select>)
     Object.keys(selectEls).forEach(col => {
       const counts = countValues(filtered, col);
       Array.from(selectEls[col].options).forEach(opt => {
         if (!opt.value) return;
-        opt.disabled = !counts[opt.value];
+        const unavailable = !counts[opt.value];
+        opt.disabled = unavailable;
+        opt.hidden = hideUnavailable && unavailable;
       });
     });
   }
@@ -478,6 +509,7 @@ function updateDisabledOptions(filtered) {
   function updateFilterVisibility() {
     tagContainer.style.display = visibleFilters.tags ? 'block' : 'none';
     applyOrder();
+    applyFilters();
     saveState();
   }
 
@@ -485,7 +517,7 @@ function updateDisabledOptions(filtered) {
     filterCheckboxesContainer.innerHTML = '';
 
     const intro = document.createElement('div');
-    intro.style.cssText = 'font-size:0.85em;color:var(--color-text-secondary);margin-bottom:8px;';
+    intro.style.cssText = 'font-size:0.85em;color:var(--color-text-secondary);margin-bottom:6px;';
     intro.textContent = 'Glisse pour réordonner. Coche pour afficher. Choisis le mode des filtres texte.';
     filterCheckboxesContainer.appendChild(intro);
 
@@ -567,6 +599,7 @@ function updateDisabledOptions(filtered) {
       saveState();
       renderFilterCheckboxes();
       applyOrder();
+      applyFilters();
     });
   }
 
@@ -579,6 +612,9 @@ function updateDisabledOptions(filtered) {
       selectedTexts = state.selectedTexts || {};
       textModes = state.textModes || {};
       if (state.visibleFilters) visibleFilters = state.visibleFilters;
+      if (state.hideUnavailable !== undefined) hideUnavailable = state.hideUnavailable;
+
+      if (hideUnavailableOpt) hideUnavailableOpt.checked = hideUnavailable;
 
       applyOrder();
 
@@ -595,6 +631,14 @@ function updateDisabledOptions(filtered) {
     }
   }
 
+  if (hideUnavailableOpt) {
+    hideUnavailableOpt.addEventListener('change', (e) => {
+      hideUnavailable = e.target.checked;
+      saveState();
+      applyFilters();
+    });
+  }
+
   resetButton.addEventListener('click', () => {
     selectedTags = {};
     selectedTexts = {};
@@ -607,6 +651,7 @@ function updateDisabledOptions(filtered) {
 
   manageFiltersBtn.addEventListener('click', () => {
     filterModal.style.display = 'flex';
+    if (hideUnavailableOpt) hideUnavailableOpt.checked = hideUnavailable;
     renderFilterCheckboxes();
   });
 
