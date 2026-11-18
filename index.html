@@ -25,7 +25,14 @@
     <!-- Modale pour gérer les filtres -->
     <div id="filter-modal" class="modal">
       <div class="modal-content">
-        <h3 style="margin-top:0; font-size:16px; font-weight:600; margin-bottom:12px;">Sélectionner les filtres à afficher</h3>
+        <h3 style="margin-top:0; font-size:16px; font-weight:600; margin-bottom:10px;">Configuration des filtres</h3>
+        
+        <!-- Option globale : Masquer vs Griser -->
+        <label style="display:flex; align-items:center; gap:8px; padding:8px 10px; background:#f5f5f5; border-radius:6px; margin-bottom:12px; cursor:pointer; font-size:13px; font-weight:500;">
+          <input type="checkbox" id="hide-unavailable-opt" checked style="accent-color:#951b1e; margin:0;">
+          <span>Masquer les options indisponibles (au lieu de les griser)</span>
+        </label>
+
         <div style="display:flex; gap:8px; margin-bottom:12px;">
           <button id="select-all">Tout sélectionner</button>
           <button id="deselect-all">Tout désélectionner</button>
