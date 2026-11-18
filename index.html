@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="fr">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Filtre avancé</title>
+    <script src="https://docs.getgrist.com/grist-plugin-api.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.3.8/js/bootstrap.min.js"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="widget-style.css">
+    <script src="widget.js"></script> 
+  </head>
+  <body>
+    <div id="filters-actions" class="flex gap-2 mt-2">
+      <button id="manage-filters-btn">
+        <i class="fas fa-filter"></i> Gérer
+      </button>
+      <button id="reset-filters">
+       <i class="fas fa-undo"></i> Réinitialiser
+      </button>
+      <div id="results-count">Résultats: 0</div>
+    </div>
+
+    <!-- Modale pour gérer les filtres -->
+    <div id="filter-modal" class="modal">
+      <div class="modal-content">
+        <h3 style="margin-top:0; font-size:16px; font-weight:600; margin-bottom:12px;">Sélectionner les filtres à afficher</h3>
+        <div style="display:flex; gap:8px; margin-bottom:12px;">
+          <button id="select-all">Tout sélectionner</button>
+          <button id="deselect-all">Tout désélectionner</button>
+        </div>
+        <div id="filter-checkboxes" style="display:flex; flex-direction:column; gap:6px;"></div>
+        <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:12px;">
+          <button id="close-modal">Fermer</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="filters-container">
+      <input id="global-search" placeholder="Recherche globale..."/>
+      <div id="tag-filters"></div>
+      <div id="text-filters"></div>
+      <div id="dynamic-filters"></div>
+    </div>
+  </body>
+</html>
