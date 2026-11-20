@@ -1,19 +1,20 @@
 document.addEventListener('DOMContentLoaded', () => {
   let allRecords = [];
-  let selectedTags = {};        // Stocke les sélections multiples (tags + colonnes texte en mode multi)
-  let selectedTexts = {};       // Stocke le texte de recherche par colonne
-  let textModes = {};           // 'multi' | 'search' | 'dropdown' | 'both'
+  let selectedTags = {};
+  let selectedTexts = {};
+  let textModes = {};
   let selectEls = {};
   let textEls = {};
-  const STORAGE_KEY = 'grist_filters_state_v2';
+  const STORAGE_KEY = 'grist_filters_session_v3';
   const DROPDOWN_THRESHOLD = 10;
   let tagColumns = {};
   let selectColumns = {};
   let textColumns = {};
   let visibleFilters = { tags: true };
   let columnsOrder = [];
-  let hideUnavailable = true;   // Activé par défaut : masque les options indisponibles
-  let isModalDirty = false;     // Suit les modifications en attente dans la modale Gérer
+  let hideUnavailable = true;
+  let isModalDirty = false;
+  let isInitialized = false;
 
   const tagContainer = document.getElementById('tag-filters');
   const textContainer = document.getElementById('text-filters');
@@ -46,10 +47,30 @@ document.addEventListener('DOMContentLoaded', () => {
     numeric: true, sensitivity: 'base'
   }));
 
-  function saveState() {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({
-      selectedTags, selectedTexts, textModes, selectEls: serializeSelects(), visibleFilters, hideUnavailable
-    }));
+  // Sauvegarde la configuration structurelle (ordre, visibilité, modes) DANS le document Grist
+  async function saveWidgetConfig() {
+    try {
+      await grist.setOption('filterWidgetConfig', {
+        visibleFilters,
+        columnsOrder,
+        textModes,
+        hideUnavailable
+      });
+    } catch (e) {
+      console.warn('Impossible de sauvegarder dans les options Grist (accès lecture seule ?) :', e);
+    }
+  }
+
+  // Sauvegarde uniquement les filtres actifs de la session utilisateur
+  function saveSessionState() {
+    try {
+      const key = window._currentStorageKey || STORAGE_KEY;
+      sessionStorage.setItem(key, JSON.stringify({
+        selectedTags,
+        selectedTexts,
+        selectEls: serializeSelects()
+      }));
+    } catch (e) { /* Ignore si bloqué */ }
   }
 
   async function fetchColumnsAndTypes(records) {
@@ -130,7 +151,7 @@ document.addEventListener('DOMContentLoaded', () => {
       ...Object.keys(selectColumns).map(col => ({ col, type: 'select' })),
       ...Object.keys(textColumns).map(col => ({ col, type: 'text' })),
     ];
-    const savedOrder = visibleFilters.order || [];
+    const savedOrder = (columnsOrder && columnsOrder.length > 0) ? columnsOrder : (visibleFilters.order || []);
     const existing = new Set(savedOrder.map(o => o.col));
     columnsOrder = [
       ...savedOrder.filter(o => allCols.some(c => c.col === o.col)),
@@ -402,7 +423,7 @@ document.addEventListener('DOMContentLoaded', () => {
     resultsCount.textContent = `Résultats: ${filtered.length}`;
     grist.setSelectedRows(filtered.map(r => r.id));
     updateDisabledOptions(filtered);
-    saveState();
+    saveSessionState();
   }
 
   function updateDisabledOptions(filtered) {
@@ -474,7 +495,6 @@ document.addEventListener('DOMContentLoaded', () => {
         }
       });
 
-      // Gestion des pastilles (tags <= 10)
       container.querySelectorAll('.tag').forEach(tag => {
         const val = tag.textContent;
         const isChecked = (selectedTags[col] || []).includes(val);
@@ -489,7 +509,6 @@ document.addEventListener('DOMContentLoaded', () => {
       });
     });
 
-    // Gestion des listes déroulantes simples (<select>)
     Object.keys(selectEls).forEach(col => {
       const counts = countValues(filtered, col);
       Array.from(selectEls[col].options).forEach(opt => {
@@ -507,11 +526,11 @@ document.addEventListener('DOMContentLoaded', () => {
     return sel;
   }
 
-  function updateFilterVisibility() {
+  async function updateFilterVisibility() {
     tagContainer.style.display = visibleFilters.tags ? 'block' : 'none';
     applyOrder();
     applyFilters();
-    saveState();
+    await saveWidgetConfig();
   }
 
   function renderFilterCheckboxes() {
@@ -519,7 +538,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const intro = document.createElement('div');
     intro.style.cssText = 'font-size:0.85em;color:var(--color-text-secondary);margin-bottom:6px;';
-    intro.textContent = 'Glisse une ligne (ou utilise ↑ ↓) pour réordonner. Les changements s\'appliquent à la fermeture.';
+    intro.textContent = 'Glisse une ligne (ou utilise ↑ ↓) pour réordonner. Enregistré dans le document à la fermeture.';
     filterCheckboxesContainer.appendChild(intro);
 
     let dragFromIdx = null;
@@ -669,32 +688,44 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  function restoreState() {
-    const saved = localStorage.getItem(STORAGE_KEY);
-    if (!saved) return;
+  async function restoreAllState() {
+    // 1. Lire la configuration enregistrée dans le document Grist
     try {
-      const state = JSON.parse(saved);
-      selectedTags = state.selectedTags || {};
-      selectedTexts = state.selectedTexts || {};
-      textModes = state.textModes || {};
-      if (state.visibleFilters) visibleFilters = state.visibleFilters;
-      if (state.hideUnavailable !== undefined) hideUnavailable = state.hideUnavailable;
-
-      if (hideUnavailableOpt) hideUnavailableOpt.checked = hideUnavailable;
-
-      applyOrder();
-
-      Object.entries(state.selectEls || {}).forEach(([col, val]) => {
-        if (selectEls[col]) selectEls[col].value = val;
-      });
-      Object.keys(textEls).forEach(col => {
-        textEls[col].value = selectedTexts[col] || '';
-      });
-
-      applyFilters();
+      const savedConfig = await grist.getOption('filterWidgetConfig');
+      if (savedConfig) {
+        if (savedConfig.visibleFilters) visibleFilters = savedConfig.visibleFilters;
+        if (savedConfig.columnsOrder) columnsOrder = savedConfig.columnsOrder;
+        if (savedConfig.textModes) textModes = savedConfig.textModes;
+        if (savedConfig.hideUnavailable !== undefined) hideUnavailable = savedConfig.hideUnavailable;
+      }
     } catch (e) {
-      console.error('Erreur restauration état :', e);
+      console.warn('Lecture options Grist :', e);
     }
+
+    if (hideUnavailableOpt) hideUnavailableOpt.checked = hideUnavailable;
+
+    // 2. Appliquer l'ordre et rendre les filtres
+    applyOrder();
+
+    // 3. Restaurer les filtres actifs de la session si existants
+    try {
+      const key = window._currentStorageKey || STORAGE_KEY;
+      const savedSession = sessionStorage.getItem(key);
+      if (savedSession) {
+        const state = JSON.parse(savedSession);
+        selectedTags = state.selectedTags || {};
+        selectedTexts = state.selectedTexts || {};
+        applyOrder();
+        Object.entries(state.selectEls || {}).forEach(([col, val]) => {
+          if (selectEls[col]) selectEls[col].value = val;
+        });
+        Object.keys(textEls).forEach(col => {
+          textEls[col].value = selectedTexts[col] || '';
+        });
+      }
+    } catch (e) { /* Ignore */ }
+
+    applyFilters();
   }
 
   if (hideUnavailableOpt) {
@@ -721,11 +752,10 @@ document.addEventListener('DOMContentLoaded', () => {
     renderFilterCheckboxes();
   });
 
-  closeModalBtn.addEventListener('click', () => {
+  closeModalBtn.addEventListener('click', async () => {
     filterModal.style.display = 'none';
     if (isModalDirty) {
-      saveState();
-      updateFilterVisibility();
+      await updateFilterVisibility();
       isModalDirty = false;
     }
   });
@@ -750,15 +780,17 @@ document.addEventListener('DOMContentLoaded', () => {
 
   globalSearch.addEventListener('input', applyFilters);
 
-grist.ready({ requiredAccess: 'full', allowSelectBy: true });
+  grist.ready({ requiredAccess: 'full', allowSelectBy: true });
 
-  let isInitialized = false;
-
-  async function initData(records) {
+  async function initData(records, tableId) {
     allRecords = records || [];
     tagColumns = {};
     selectColumns = {};
     textColumns = {};
+
+    if (tableId) {
+      window._currentStorageKey = `${STORAGE_KEY}_${tableId}`;
+    }
 
     try {
       await fetchColumnsAndTypes(allRecords);
@@ -766,25 +798,13 @@ grist.ready({ requiredAccess: 'full', allowSelectBy: true });
       console.error('Impossible de récupérer les métadonnées :', error);
     }
 
-    initOrder();
-    applyOrder();
-
-    resultsCount.textContent = `Résultats: ${allRecords.length}`;
-    if (allRecords.length > 0) {
-      grist.setSelectedRows(allRecords.map(r => r.id));
-    }
-
-    restoreState();
+    await restoreAllState();
   }
 
-  async function loadDirectlyFromDocApi() {
+  async function forceLoadTable() {
+    if (isInitialized) return;
     try {
-      let tableId;
-      try {
-        tableId = await grist.selectedTable.getTableId();
-      } catch {
-        tableId = await grist.getOption('tableId');
-      }
+      const tableId = await grist.selectedTable.getTableId();
       if (!tableId) return;
 
       const raw = await grist.docApi.fetchTable(tableId);
@@ -800,24 +820,21 @@ grist.ready({ requiredAccess: 'full', allowSelectBy: true });
         records[i] = rec;
       }
 
-      if (!isInitialized) {
-        isInitialized = true;
-        await initData(records);
-      }
+      isInitialized = true;
+      await initData(records, tableId);
     } catch (err) {
-      console.error('Erreur chargement direct fetchTable :', err);
+      console.error('Erreur chargement direct :', err);
     }
   }
 
   grist.onRecords(async (records) => {
-    if (records && records.length > 0) {
+    if (records && records.length > 0 && !isInitialized) {
       isInitialized = true;
-      await initData(records);
+      let tableId = '';
+      try { tableId = await grist.selectedTable.getTableId(); } catch {}
+      await initData(records, tableId);
     }
   });
 
-  // Déclenche le chargement direct par colonnes si onRecords tarde ou bloque sur > 100 000 lignes
-  setTimeout(() => {
-    if (!isInitialized) loadDirectlyFromDocApi();
-  }, 800);
+  setTimeout(forceLoadTable, 500);
 });
