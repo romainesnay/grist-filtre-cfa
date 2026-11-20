@@ -13,6 +13,7 @@ document.addEventListener('DOMContentLoaded', () => {
   let visibleFilters = { tags: true };
   let columnsOrder = [];
   let hideUnavailable = true;   // Activé par défaut : masque les options indisponibles
+  let isModalDirty = false;     // Suit les modifications en attente dans la modale Gérer
 
   const tagContainer = document.getElementById('tag-filters');
   const textContainer = document.getElementById('text-filters');
@@ -473,7 +474,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
       });
 
-      // Gestion des pastilles (tags ≤ 10)
+      // Gestion des pastilles (tags <= 10)
       container.querySelectorAll('.tag').forEach(tag => {
         const val = tag.textContent;
         const isChecked = (selectedTags[col] || []).includes(val);
@@ -518,10 +519,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const intro = document.createElement('div');
     intro.style.cssText = 'font-size:0.85em;color:var(--color-text-secondary);margin-bottom:6px;';
-    intro.textContent = 'Glisse pour réordonner. Coche pour afficher. Choisis le mode des filtres texte.';
+    intro.textContent = 'Glisse une ligne (ou utilise ↑ ↓) pour réordonner. Les changements s\'appliquent à la fermeture.';
     filterCheckboxesContainer.appendChild(intro);
 
-    columnsOrder.forEach(({ col, type }) => {
+    let dragFromIdx = null;
+
+    columnsOrder.forEach(({ col, type }, idx) => {
       const label = type === 'tag' ? tagColumns[col]
                   : type === 'select' ? selectColumns[col]
                   : textColumns[col];
@@ -530,26 +533,69 @@ document.addEventListener('DOMContentLoaded', () => {
       const div = document.createElement('div');
       div.className = 'checkbox-item';
       div.dataset.col = col;
-      div.dataset.type = type;
+      div.dataset.idx = idx;
       div.draggable = true;
+      div.style.cssText = 'display:flex; align-items:center; gap:6px; padding:5px 8px; border-radius:5px; border:1px solid #e5e7eb; background:#fff; transition: background 0.1s;';
 
       const handle = document.createElement('span');
       handle.textContent = '⠿';
-      handle.style.cssText = 'color:var(--color-text-tertiary);cursor:grab;';
+      handle.title = 'Glisser pour déplacer';
+      handle.style.cssText = 'color:#9ca3af; cursor:grab; font-size:15px; user-select:none;';
 
       const checkbox = document.createElement('input');
       checkbox.type = 'checkbox';
       checkbox.id = `order-${col}`;
       checkbox.checked = visibleFilters[col] !== false;
+      checkbox.style.accentColor = '#951b1e';
       checkbox.addEventListener('change', e => {
         visibleFilters[col] = e.target.checked;
-        updateFilterVisibility();
+        isModalDirty = true;
       });
 
       const labelEl = document.createElement('label');
       labelEl.htmlFor = `order-${col}`;
       labelEl.textContent = label;
-      labelEl.style.cssText = 'flex:1;';
+      labelEl.style.cssText = 'flex:1; cursor:pointer; font-size:13px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;';
+
+      const moveBox = document.createElement('div');
+      moveBox.style.cssText = 'display:flex; gap:2px;';
+
+      const upBtn = document.createElement('button');
+      upBtn.type = 'button';
+      upBtn.textContent = '↑';
+      upBtn.title = 'Monter';
+      upBtn.disabled = idx === 0;
+      upBtn.style.cssText = 'padding:1px 5px; font-size:11px; border:1px solid #d1d5db; border-radius:3px; background:#f9fafb; cursor:pointer;';
+      upBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (idx > 0) {
+          const [moved] = columnsOrder.splice(idx, 1);
+          columnsOrder.splice(idx - 1, 0, moved);
+          visibleFilters.order = columnsOrder;
+          isModalDirty = true;
+          renderFilterCheckboxes();
+        }
+      });
+
+      const downBtn = document.createElement('button');
+      downBtn.type = 'button';
+      downBtn.textContent = '↓';
+      downBtn.title = 'Descendre';
+      downBtn.disabled = idx === columnsOrder.length - 1;
+      downBtn.style.cssText = 'padding:1px 5px; font-size:11px; border:1px solid #d1d5db; border-radius:3px; background:#f9fafb; cursor:pointer;';
+      downBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (idx < columnsOrder.length - 1) {
+          const [moved] = columnsOrder.splice(idx, 1);
+          columnsOrder.splice(idx + 1, 0, moved);
+          visibleFilters.order = columnsOrder;
+          isModalDirty = true;
+          renderFilterCheckboxes();
+        }
+      });
+
+      moveBox.appendChild(upBtn);
+      moveBox.appendChild(downBtn);
 
       div.appendChild(handle);
       div.appendChild(checkbox);
@@ -557,7 +603,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
       if (type === 'text') {
         const modeSelect = document.createElement('select');
-        modeSelect.style.cssText = 'font-size:11.5px;padding:2px 4px;border-radius:4px;border:1px solid var(--border);';
+        modeSelect.style.cssText = 'font-size:11.5px; padding:2px 4px; border-radius:4px; border:1px solid #d1d5db;';
         modeSelect.appendChild(new Option('Multi-sélection', 'multi'));
         modeSelect.appendChild(new Option('Recherche texte', 'search'));
         modeSelect.appendChild(new Option('Liste simple', 'dropdown'));
@@ -566,40 +612,60 @@ document.addEventListener('DOMContentLoaded', () => {
         modeSelect.addEventListener('change', () => {
           textModes[col] = modeSelect.value;
           selectedTags[col] = [];
-          saveState();
-          applyOrder();
-          applyFilters();
+          isModalDirty = true;
         });
         modeSelect.addEventListener('mousedown', e => e.stopPropagation());
         div.appendChild(modeSelect);
       }
 
-      filterCheckboxesContainer.appendChild(div);
-    });
+      div.appendChild(moveBox);
 
-    let dragEl = null;
-    filterCheckboxesContainer.addEventListener('dragstart', e => {
-      dragEl = e.target.closest('[draggable]');
-      if (dragEl) dragEl.style.opacity = '0.4';
-    });
-    filterCheckboxesContainer.addEventListener('dragend', () => {
-      if (dragEl) dragEl.style.opacity = '1';
-      dragEl = null;
-    });
-    filterCheckboxesContainer.addEventListener('dragover', e => e.preventDefault());
-    filterCheckboxesContainer.addEventListener('drop', e => {
-      e.preventDefault();
-      const target = e.target.closest('[data-col]');
-      if (!target || !dragEl || target === dragEl) return;
-      const fromIdx = columnsOrder.findIndex(o => o.col === dragEl.dataset.col);
-      const toIdx = columnsOrder.findIndex(o => o.col === target.dataset.col);
-      const [moved] = columnsOrder.splice(fromIdx, 1);
-      columnsOrder.splice(toIdx, 0, moved);
-      visibleFilters.order = columnsOrder;
-      saveState();
-      renderFilterCheckboxes();
-      applyOrder();
-      applyFilters();
+      div.addEventListener('dragstart', e => {
+        dragFromIdx = idx;
+        div.style.opacity = '0.4';
+        div.style.background = '#fef2f2';
+        e.dataTransfer.effectAllowed = 'move';
+      });
+
+      div.addEventListener('dragend', () => {
+        div.style.opacity = '1';
+        div.style.background = '#fff';
+        filterCheckboxesContainer.querySelectorAll('.checkbox-item').forEach(el => {
+          el.style.borderTop = '1px solid #e5e7eb';
+          el.style.borderBottom = '1px solid #e5e7eb';
+        });
+      });
+
+      div.addEventListener('dragover', e => {
+        e.preventDefault();
+        if (dragFromIdx === null || dragFromIdx === idx) return;
+        const rect = div.getBoundingClientRect();
+        const isTopHalf = (e.clientY - rect.top) < rect.height / 2;
+        div.style.borderTop = isTopHalf ? '2.5px solid #951b1e' : '1px solid #e5e7eb';
+        div.style.borderBottom = !isTopHalf ? '2.5px solid #951b1e' : '1px solid #e5e7eb';
+      });
+
+      div.addEventListener('dragleave', () => {
+        div.style.borderTop = '1px solid #e5e7eb';
+        div.style.borderBottom = '1px solid #e5e7eb';
+      });
+
+      div.addEventListener('drop', e => {
+        e.preventDefault();
+        if (dragFromIdx === null || dragFromIdx === idx) return;
+        const rect = div.getBoundingClientRect();
+        const isTopHalf = (e.clientY - rect.top) < rect.height / 2;
+        let toIdx = isTopHalf ? idx : idx + 1;
+        if (dragFromIdx < toIdx) toIdx--;
+
+        const [moved] = columnsOrder.splice(dragFromIdx, 1);
+        columnsOrder.splice(toIdx, 0, moved);
+        visibleFilters.order = columnsOrder;
+        isModalDirty = true;
+        renderFilterCheckboxes();
+      });
+
+      filterCheckboxesContainer.appendChild(div);
     });
   }
 
@@ -634,8 +700,7 @@ document.addEventListener('DOMContentLoaded', () => {
   if (hideUnavailableOpt) {
     hideUnavailableOpt.addEventListener('change', (e) => {
       hideUnavailable = e.target.checked;
-      saveState();
-      applyFilters();
+      isModalDirty = true;
     });
   }
 
@@ -650,6 +715,7 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   manageFiltersBtn.addEventListener('click', () => {
+    isModalDirty = false;
     filterModal.style.display = 'flex';
     if (hideUnavailableOpt) hideUnavailableOpt.checked = hideUnavailable;
     renderFilterCheckboxes();
@@ -657,6 +723,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
   closeModalBtn.addEventListener('click', () => {
     filterModal.style.display = 'none';
+    if (isModalDirty) {
+      saveState();
+      updateFilterVisibility();
+      isModalDirty = false;
+    }
   });
 
   selectAllBtn.addEventListener('click', () => {
@@ -664,7 +735,7 @@ document.addEventListener('DOMContentLoaded', () => {
     Object.keys(selectColumns).forEach(col => { visibleFilters[col] = true; });
     Object.keys(tagColumns).forEach(col => { visibleFilters[col] = true; });
     Object.keys(textColumns).forEach(col => { visibleFilters[col] = true; });
-    updateFilterVisibility();
+    isModalDirty = true;
     renderFilterCheckboxes();
   });
 
@@ -673,7 +744,7 @@ document.addEventListener('DOMContentLoaded', () => {
     Object.keys(selectColumns).forEach(col => { visibleFilters[col] = false; });
     Object.keys(tagColumns).forEach(col => { visibleFilters[col] = false; });
     Object.keys(textColumns).forEach(col => { visibleFilters[col] = false; });
-    updateFilterVisibility();
+    isModalDirty = true;
     renderFilterCheckboxes();
   });
 
