@@ -752,14 +752,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
   grist.ready({ requiredAccess: 'full', allowSelectBy: true });
 
-  grist.onRecords(async (records) => {
-    allRecords = records;
+  async function initData(records) {
+    allRecords = records || [];
     tagColumns = {};
     selectColumns = {};
     textColumns = {};
 
     try {
-      await fetchColumnsAndTypes(records);
+      await fetchColumnsAndTypes(allRecords);
     } catch (error) {
       console.error('Impossible de récupérer les métadonnées :', error);
     }
@@ -768,8 +768,14 @@ document.addEventListener('DOMContentLoaded', () => {
     applyOrder();
 
     resultsCount.textContent = `Résultats: ${allRecords.length}`;
-    grist.setSelectedRows(allRecords.map(r => r.id));
+    if (allRecords.length > 0) {
+      grist.setSelectedRows(allRecords.map(r => r.id));
+    }
 
     restoreState();
+  }
+
+  grist.onRecords(async (records) => {
+    await initData(records);
   });
 });
