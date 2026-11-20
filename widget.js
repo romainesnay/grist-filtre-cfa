@@ -47,7 +47,6 @@ document.addEventListener('DOMContentLoaded', () => {
     numeric: true, sensitivity: 'base'
   }));
 
-  // Sauvegarde la configuration structurelle (ordre, visibilité, modes) DANS le document Grist
   async function saveWidgetConfig() {
     try {
       await grist.setOption('filterWidgetConfig', {
@@ -57,11 +56,10 @@ document.addEventListener('DOMContentLoaded', () => {
         hideUnavailable
       });
     } catch (e) {
-      console.warn('Impossible de sauvegarder dans les options Grist (accès lecture seule ?) :', e);
+      console.warn('Impossible de sauvegarder dans les options Grist :', e);
     }
   }
 
-  // Sauvegarde uniquement les filtres actifs de la session utilisateur
   function saveSessionState() {
     try {
       const key = window._currentStorageKey || STORAGE_KEY;
@@ -70,7 +68,7 @@ document.addEventListener('DOMContentLoaded', () => {
         selectedTexts,
         selectEls: serializeSelects()
       }));
-    } catch (e) { /* Ignore si bloqué */ }
+    } catch (e) { /* Ignore */ }
   }
 
   async function fetchColumnsAndTypes(records) {
@@ -84,7 +82,6 @@ document.addEventListener('DOMContentLoaded', () => {
       try {
         tableId = await grist.getOption('tableId');
       } catch {
-        console.error('Impossible de récupérer le tableId.');
         return;
       }
     }
@@ -137,11 +134,21 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function countValues(records, col) {
     const counts = {};
-    records.forEach(r => {
-      cleanVal(r[col]).forEach(v => {
-        counts[v] = (counts[v] || 0) + 1;
-      });
-    });
+    for (let i = 0; i < records.length; i++) {
+      const v = records[i][col];
+      if (v === null || v === undefined || v === '') continue;
+      if (Array.isArray(v)) {
+        for (let j = 0; j < v.length; j++) {
+          const item = v[j];
+          if (item !== 'L' && item !== null && item !== undefined && item !== '') {
+            counts[item] = (counts[item] || 0) + 1;
+          }
+        }
+      } else {
+        const str = String(v);
+        counts[str] = (counts[str] || 0) + 1;
+      }
+    }
     return counts;
   }
 
@@ -209,6 +216,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
     panel.appendChild(ddSearch);
 
+    const frag = document.createDocumentFragment();
     uniqueValues.forEach(val => {
       const opt = document.createElement('label');
       opt.className = 'dd-option';
@@ -234,8 +242,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
       opt.appendChild(cb);
       opt.appendChild(txt);
-      panel.appendChild(opt);
+      frag.appendChild(opt);
     });
+    panel.appendChild(frag);
 
     ddToggle.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -385,8 +394,27 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  function applyFilters() {
-    let filtered = [...allRecords];
+  function hasAnyActiveFilter() {
+    const hasTags = Object.values(selectedTags).some(arr => arr && arr.length > 0);
+    const hasTexts = Object.values(selectedTexts).some(t => t && t.trim() !== '');
+    const hasSelects = Object.values(selectEls).some(el => el && el.value !== '');
+    const hasGlobal = globalSearch && globalSearch.value.trim() !== '';
+    return hasTags || hasTexts || hasSelects || hasGlobal;
+  }
+
+  function applyFilters(isInitialLoad = false) {
+    // Optimisation majeure : si aucun filtre n'est actif, pas besoin de filtrer ni de recalculer 1M d'options
+    if (!hasAnyActiveFilter()) {
+      resultsCount.textContent = `Résultats: ${allRecords.length}`;
+      if (!isInitialLoad) {
+        grist.setSelectedRows(allRecords.map(r => r.id));
+      }
+      resetAllDisabledOptions();
+      saveSessionState();
+      return;
+    }
+
+    let filtered = allRecords;
 
     Object.keys(selectedTags).forEach(col => {
       const vals = selectedTags[col];
@@ -426,11 +454,33 @@ document.addEventListener('DOMContentLoaded', () => {
     saveSessionState();
   }
 
+  function resetAllDisabledOptions() {
+    document.querySelectorAll('.dd-option').forEach(opt => {
+      opt.dataset.unavailable = 'false';
+      opt.classList.remove('disabled');
+      opt.style.display = 'flex';
+      const cb = opt.querySelector('input');
+      if (cb) cb.disabled = false;
+    });
+    document.querySelectorAll('.tag').forEach(tag => {
+      tag.classList.remove('disabled');
+      tag.style.display = 'inline-block';
+    });
+    Object.keys(selectEls).forEach(col => {
+      Array.from(selectEls[col].options).forEach(opt => {
+        opt.disabled = false;
+        opt.hidden = false;
+      });
+    });
+  }
+
   function updateDisabledOptions(filtered) {
     const allMultiCols = [...Object.keys(tagColumns), ...Object.keys(textColumns), ...Object.keys(selectColumns)];
     
     allMultiCols.forEach(col => {
-      let otherFiltered = [...allRecords];
+      if (visibleFilters[col] === false) return; // Ignore les colonnes masquées pour gagner du temps
+
+      let otherFiltered = allRecords;
 
       Object.keys(selectedTags).forEach(otherCol => {
         if (otherCol === col) return;
@@ -689,7 +739,6 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   async function restoreAllState() {
-    // 1. Lire la configuration enregistrée dans le document Grist
     try {
       const savedConfig = await grist.getOption('filterWidgetConfig');
       if (savedConfig) {
@@ -698,16 +747,10 @@ document.addEventListener('DOMContentLoaded', () => {
         if (savedConfig.textModes) textModes = savedConfig.textModes;
         if (savedConfig.hideUnavailable !== undefined) hideUnavailable = savedConfig.hideUnavailable;
       }
-    } catch (e) {
-      console.warn('Lecture options Grist :', e);
-    }
+    } catch (e) { /* Ignore */ }
 
     if (hideUnavailableOpt) hideUnavailableOpt.checked = hideUnavailable;
 
-    // 2. Appliquer l'ordre et rendre les filtres
-    applyOrder();
-
-    // 3. Restaurer les filtres actifs de la session si existants
     try {
       const key = window._currentStorageKey || STORAGE_KEY;
       const savedSession = sessionStorage.getItem(key);
@@ -722,10 +765,14 @@ document.addEventListener('DOMContentLoaded', () => {
         Object.keys(textEls).forEach(col => {
           textEls[col].value = selectedTexts[col] || '';
         });
+        applyFilters(true);
+        return;
       }
     } catch (e) { /* Ignore */ }
 
-    applyFilters();
+    // Un seul rendu complet au démarrage
+    applyOrder();
+    applyFilters(true);
   }
 
   if (hideUnavailableOpt) {
@@ -778,7 +825,7 @@ document.addEventListener('DOMContentLoaded', () => {
     renderFilterCheckboxes();
   });
 
-  globalSearch.addEventListener('input', applyFilters);
+  globalSearch.addEventListener('input', () => applyFilters());
 
   grist.ready({ requiredAccess: 'full', allowSelectBy: true });
 
@@ -836,5 +883,6 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
-  setTimeout(forceLoadTable, 500);
+  // Délai réduit à 150ms au lieu de 500ms
+  setTimeout(forceLoadTable, 150);
 });
