@@ -750,7 +750,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
   globalSearch.addEventListener('input', applyFilters);
 
-  grist.ready({ requiredAccess: 'full', allowSelectBy: true });
+grist.ready({ requiredAccess: 'full', allowSelectBy: true });
+
+  let isInitialized = false;
 
   async function initData(records) {
     allRecords = records || [];
@@ -775,7 +777,47 @@ document.addEventListener('DOMContentLoaded', () => {
     restoreState();
   }
 
+  async function loadDirectlyFromDocApi() {
+    try {
+      let tableId;
+      try {
+        tableId = await grist.selectedTable.getTableId();
+      } catch {
+        tableId = await grist.getOption('tableId');
+      }
+      if (!tableId) return;
+
+      const raw = await grist.docApi.fetchTable(tableId);
+      if (!raw || !raw.id || raw.id.length === 0) return;
+
+      const cols = Object.keys(raw).filter(k => k !== 'id' && k !== 'manualSort' && !k.startsWith('gristHelper'));
+      const records = new Array(raw.id.length);
+      for (let i = 0; i < raw.id.length; i++) {
+        const rec = { id: raw.id[i] };
+        for (let c = 0; c < cols.length; c++) {
+          rec[cols[c]] = raw[cols[c]][i];
+        }
+        records[i] = rec;
+      }
+
+      if (!isInitialized) {
+        isInitialized = true;
+        await initData(records);
+      }
+    } catch (err) {
+      console.error('Erreur chargement direct fetchTable :', err);
+    }
+  }
+
   grist.onRecords(async (records) => {
-    await initData(records);
+    if (records && records.length > 0) {
+      isInitialized = true;
+      await initData(records);
+    }
   });
+
+  // Déclenche le chargement direct par colonnes si onRecords tarde ou bloque sur > 100 000 lignes
+  setTimeout(() => {
+    if (!isInitialized) loadDirectlyFromDocApi();
+  }, 800);
 });
