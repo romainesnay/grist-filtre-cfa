@@ -1,5 +1,7 @@
 document.addEventListener('DOMContentLoaded', () => {
-  let allRecords = [];
+  let rawTable = null;          // Stockage colonnaire brut { id: [...], colA: [...], ... }
+  let rowCount = 0;
+  let activeCols = [];          // Liste des colId réellement filtrables
   let selectedTags = {};
   let selectedTexts = {};
   let textModes = {};
@@ -14,7 +16,6 @@ document.addEventListener('DOMContentLoaded', () => {
   let columnsOrder = [];
   let hideUnavailable = true;
   let isModalDirty = false;
-  let isInitialized = false;
 
   const tagContainer = document.getElementById('tag-filters');
   const textContainer = document.getElementById('text-filters');
@@ -71,27 +72,15 @@ document.addEventListener('DOMContentLoaded', () => {
     } catch (e) { /* Ignore */ }
   }
 
-  async function fetchColumnsAndTypes(records) {
-    const colTable = await grist.docApi.fetchTable('_grist_Tables_column');
-    const tableRef = await grist.docApi.fetchTable('_grist_Tables');
+  async function fetchColumnsAndTypes(tableId, raw) {
+    const [colTable, tableRef] = await Promise.all([
+      grist.docApi.fetchTable('_grist_Tables_column'),
+      grist.docApi.fetchTable('_grist_Tables')
+    ]);
 
-    let tableId;
-    try {
-      tableId = await grist.selectedTable.getTableId();
-    } catch {
-      try {
-        tableId = await grist.getOption('tableId');
-      } catch {
-        return;
-      }
-    }
-
-    if (!tableId) return;
     const tableIdx = tableRef.tableId.indexOf(tableId);
     if (tableIdx === -1) return;
     const parentRef = tableRef.id[tableIdx];
-
-    const recordKeys = records && records.length > 0 ? new Set(Object.keys(records[0])) : null;
 
     colTable.parentId.forEach((pid, i) => {
       if (pid !== parentRef) return;
@@ -100,7 +89,18 @@ document.addEventListener('DOMContentLoaded', () => {
       const type  = colTable.type[i];
       if (!colId || colId.startsWith('gristHelper') || colId === 'manualSort') return;
       if (colTable.isHiddenCol && colTable.isHiddenCol[i]) return;
-      if (recordKeys && !recordKeys.has(colId)) return;
+      if (!raw[colId]) return;
+
+      const colArr = raw[colId];
+      let hasData = false;
+      for (let r = 0; r < rowCount; r++) {
+        const val = colArr[r];
+        if (val !== null && val !== undefined && val !== '' && (!Array.isArray(val) || val.length > 1)) {
+          hasData = true;
+          break;
+        }
+      }
+      if (!hasData) return;
 
       if (type === 'Choice' || type.startsWith('Ref:')) {
         selectColumns[colId] = label;
@@ -110,15 +110,6 @@ document.addEventListener('DOMContentLoaded', () => {
         textColumns[colId] = label;
       }
     });
-
-    if (records && records.length > 0) {
-      const hasValues = (col) => records.some(r => cleanVal(r[col]).length > 0);
-      Object.keys(selectColumns).forEach(col => { if (!hasValues(col)) delete selectColumns[col]; });
-      Object.keys(tagColumns).forEach(col => { if (!hasValues(col)) delete tagColumns[col]; });
-      Object.keys(textColumns).forEach(col => {
-        if (!records.some(r => r[col] !== null && r[col] !== undefined && String(r[col]) !== '')) delete textColumns[col];
-      });
-    }
 
     Object.keys(selectColumns).forEach(col => {
       if (visibleFilters[col] === undefined) visibleFilters[col] = true;
@@ -130,23 +121,49 @@ document.addEventListener('DOMContentLoaded', () => {
       if (visibleFilters[col] === undefined) visibleFilters[col] = true;
       if (textModes[col] === undefined) textModes[col] = 'multi';
     });
+
+    activeCols = [
+      ...Object.keys(tagColumns),
+      ...Object.keys(selectColumns),
+      ...Object.keys(textColumns)
+    ];
   }
 
-  function countValues(records, col) {
+  // Comptage ultra-rapide directement sur le tableau colonnaire rawTable[col]
+  function countValuesCol(col, rowIndices = null) {
     const counts = {};
-    for (let i = 0; i < records.length; i++) {
-      const v = records[i][col];
-      if (v === null || v === undefined || v === '') continue;
-      if (Array.isArray(v)) {
-        for (let j = 0; j < v.length; j++) {
-          const item = v[j];
-          if (item !== 'L' && item !== null && item !== undefined && item !== '') {
-            counts[item] = (counts[item] || 0) + 1;
+    const colArr = rawTable[col];
+    if (!colArr) return counts;
+
+    if (!rowIndices) {
+      for (let i = 0; i < rowCount; i++) {
+        const v = colArr[i];
+        if (v === null || v === undefined || v === '') continue;
+        if (Array.isArray(v)) {
+          for (let j = 0; j < v.length; j++) {
+            const item = v[j];
+            if (item !== 'L' && item !== null && item !== undefined && item !== '') {
+              counts[item] = (counts[item] || 0) + 1;
+            }
           }
+        } else {
+          counts[v] = (counts[v] || 0) + 1;
         }
-      } else {
-        const str = String(v);
-        counts[str] = (counts[str] || 0) + 1;
+      }
+    } else {
+      for (let k = 0; k < rowIndices.length; k++) {
+        const v = colArr[rowIndices[k]];
+        if (v === null || v === undefined || v === '') continue;
+        if (Array.isArray(v)) {
+          for (let j = 0; j < v.length; j++) {
+            const item = v[j];
+            if (item !== 'L' && item !== null && item !== undefined && item !== '') {
+              counts[item] = (counts[item] || 0) + 1;
+            }
+          }
+        } else {
+          counts[v] = (counts[v] || 0) + 1;
+        }
       }
     }
     return counts;
@@ -169,9 +186,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function applyOrder() {
     initOrder();
-    renderTags(allRecords);
-    renderSelects(allRecords);
-    renderTexts(allRecords);
+    renderTags();
+    renderSelects();
+    renderTexts();
   }
 
   function createMultiDropdown(col, uniqueValues, counts) {
@@ -260,7 +277,7 @@ document.addEventListener('DOMContentLoaded', () => {
     return dd;
   }
 
-  function renderTags(records) {
+  function renderTags() {
     tagContainer.innerHTML = '';
     const tagOrder = columnsOrder.filter(o => o.type === 'tag');
 
@@ -277,7 +294,7 @@ document.addEventListener('DOMContentLoaded', () => {
       title.textContent = label;
       wrapper.appendChild(title);
 
-      const counts = countValues(records, col);
+      const counts = countValuesCol(col);
       const uniqueValues = sortAlphaNum(Object.keys(counts));
       if (!selectedTags[col]) selectedTags[col] = [];
 
@@ -310,7 +327,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  function renderTexts(records) {
+  function renderTexts() {
     if (!textContainer) return;
     textContainer.innerHTML = '';
     textEls = {};
@@ -332,7 +349,7 @@ document.addEventListener('DOMContentLoaded', () => {
       title.textContent = label;
       wrapper.appendChild(title);
 
-      const counts = countValues(records, col);
+      const counts = countValuesCol(col);
       const uniqueValues = sortAlphaNum(Object.keys(counts));
 
       if (mode === 'multi') {
@@ -367,7 +384,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  function renderSelects(records) {
+  function renderSelects() {
     selectContainer.innerHTML = '';
     selectEls = {};
 
@@ -385,7 +402,7 @@ document.addEventListener('DOMContentLoaded', () => {
       title.className = 'filter-title';
       title.textContent = label;
 
-      const counts = countValues(records, col);
+      const counts = countValuesCol(col);
       const uniqueValues = sortAlphaNum(Object.keys(counts));
 
       wrapper.appendChild(title);
@@ -402,55 +419,89 @@ document.addEventListener('DOMContentLoaded', () => {
     return hasTags || hasTexts || hasSelects || hasGlobal;
   }
 
+  function getMatchingIndices(excludeCol = null) {
+    const tagCols = Object.keys(selectedTags).filter(c => c !== excludeCol && selectedTags[c]?.length > 0);
+    const txtCols = Object.keys(textEls).filter(c => c !== excludeCol && (selectedTexts[c] || '').trim() !== '');
+    const selCols = Object.keys(selectEls).filter(c => c !== excludeCol && selectEls[c]?.value);
+    const search = globalSearch.value.toLowerCase().trim();
+
+    const indices = [];
+    for (let i = 0; i < rowCount; i++) {
+      let ok = true;
+
+      for (let c = 0; c < tagCols.length; c++) {
+        const col = tagCols[c];
+        const vals = selectedTags[col];
+        const v = rawTable[col][i];
+        if (Array.isArray(v)) {
+          if (!v.some(x => x !== 'L' && vals.includes(String(x)))) { ok = false; break; }
+        } else {
+          if (v === null || v === undefined || !vals.includes(String(v))) { ok = false; break; }
+        }
+      }
+      if (!ok) continue;
+
+      for (let c = 0; c < txtCols.length; c++) {
+        const col = txtCols[c];
+        const q = selectedTexts[col].toLowerCase().trim();
+        const v = rawTable[col][i];
+        if (!String(v ?? '').toLowerCase().includes(q)) { ok = false; break; }
+      }
+      if (!ok) continue;
+
+      for (let c = 0; c < selCols.length; c++) {
+        const col = selCols[c];
+        const val = selectEls[col].value;
+        const v = rawTable[col][i];
+        if (Array.isArray(v)) {
+          if (!v.includes(val)) { ok = false; break; }
+        } else {
+          if (String(v ?? '') !== val) { ok = false; break; }
+        }
+      }
+      if (!ok) continue;
+
+      if (search) {
+        let found = false;
+        for (let c = 0; c < activeCols.length; c++) {
+          const v = rawTable[activeCols[c]][i];
+          if (!v) continue;
+          if (Array.isArray(v)) {
+            if (v.some(x => x !== 'L' && String(x).toLowerCase().includes(search))) { found = true; break; }
+          } else if (String(v).toLowerCase().includes(search)) {
+            found = true; break;
+          }
+        }
+        if (!found) continue;
+      }
+
+      indices.push(i);
+    }
+    return indices;
+  }
+
   function applyFilters(isInitialLoad = false) {
-    // Optimisation majeure : si aucun filtre n'est actif, pas besoin de filtrer ni de recalculer 1M d'options
+    if (!rawTable) return;
+
     if (!hasAnyActiveFilter()) {
-      resultsCount.textContent = `Résultats: ${allRecords.length}`;
+      resultsCount.textContent = `Résultats: ${rowCount}`;
       if (!isInitialLoad) {
-        grist.setSelectedRows(allRecords.map(r => r.id));
+        grist.setSelectedRows(rawTable.id);
       }
       resetAllDisabledOptions();
       saveSessionState();
       return;
     }
 
-    let filtered = allRecords;
-
-    Object.keys(selectedTags).forEach(col => {
-      const vals = selectedTags[col];
-      if (vals && vals.length > 0) {
-        filtered = filtered.filter(r => cleanVal(r[col]).some(v => vals.includes(v)));
-      }
-    });
-
-    Object.keys(textEls).forEach(col => {
-      const q = (selectedTexts[col] || '').toLowerCase().trim();
-      if (q) {
-        filtered = filtered.filter(r => String(r[col] ?? '').toLowerCase().includes(q));
-      }
-    });
-
-    Object.keys(selectEls).forEach(col => {
-      const val = selectEls[col]?.value;
-      if (val) {
-        filtered = filtered.filter(r => cleanVal(r[col]).includes(val));
-      }
-    });
-
-    const search = globalSearch.value.toLowerCase().trim();
-    if (search) {
-      filtered = filtered.filter(r =>
-        Object.values(r).some(v => {
-          if (!v) return false;
-          if (Array.isArray(v)) return v.some(x => String(x).toLowerCase().includes(search));
-          return String(v).toLowerCase().includes(search);
-        })
-      );
+    const matchedIndices = getMatchingIndices();
+    const matchedRowIds = new Array(matchedIndices.length);
+    for (let k = 0; k < matchedIndices.length; k++) {
+      matchedRowIds[k] = rawTable.id[matchedIndices[k]];
     }
 
-    resultsCount.textContent = `Résultats: ${filtered.length}`;
-    grist.setSelectedRows(filtered.map(r => r.id));
-    updateDisabledOptions(filtered);
+    resultsCount.textContent = `Résultats: ${matchedRowIds.length}`;
+    grist.setSelectedRows(matchedRowIds);
+    updateDisabledOptions(matchedIndices);
     saveSessionState();
   }
 
@@ -474,50 +525,12 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  function updateDisabledOptions(filtered) {
-    const allMultiCols = [...Object.keys(tagColumns), ...Object.keys(textColumns), ...Object.keys(selectColumns)];
-    
-    allMultiCols.forEach(col => {
-      if (visibleFilters[col] === false) return; // Ignore les colonnes masquées pour gagner du temps
+  function updateDisabledOptions(matchedIndices) {
+    activeCols.forEach(col => {
+      if (visibleFilters[col] === false) return;
 
-      let otherFiltered = allRecords;
-
-      Object.keys(selectedTags).forEach(otherCol => {
-        if (otherCol === col) return;
-        const vals = selectedTags[otherCol];
-        if (vals && vals.length > 0) {
-          otherFiltered = otherFiltered.filter(r => cleanVal(r[otherCol]).some(v => vals.includes(v)));
-        }
-      });
-
-      Object.keys(textEls).forEach(otherCol => {
-        if (otherCol === col) return;
-        const q = (selectedTexts[otherCol] || '').toLowerCase().trim();
-        if (q) {
-          otherFiltered = otherFiltered.filter(r => String(r[otherCol] ?? '').toLowerCase().includes(q));
-        }
-      });
-
-      Object.keys(selectEls).forEach(otherCol => {
-        if (otherCol === col) return;
-        const val = selectEls[otherCol]?.value;
-        if (val) {
-          otherFiltered = otherFiltered.filter(r => cleanVal(r[otherCol]).includes(val));
-        }
-      });
-
-      const search = globalSearch.value.toLowerCase().trim();
-      if (search) {
-        otherFiltered = otherFiltered.filter(r =>
-          Object.values(r).some(v => {
-            if (!v) return false;
-            if (Array.isArray(v)) return v.some(x => String(x).toLowerCase().includes(search));
-            return String(v).toLowerCase().includes(search);
-          })
-        );
-      }
-
-      const counts = countValues(otherFiltered, col);
+      const otherIndices = getMatchingIndices(col);
+      const counts = countValuesCol(col, otherIndices);
       const container = document.querySelector(`.filter-card[data-col="${col}"], .tag-group[data-col="${col}"]`);
       if (!container) return;
 
@@ -560,7 +573,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     Object.keys(selectEls).forEach(col => {
-      const counts = countValues(filtered, col);
+      const counts = countValuesCol(col, matchedIndices);
       Array.from(selectEls[col].options).forEach(opt => {
         if (!opt.value) return;
         const unavailable = !counts[opt.value];
@@ -770,7 +783,6 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     } catch (e) { /* Ignore */ }
 
-    // Un seul rendu complet au démarrage
     applyOrder();
     applyFilters(true);
   }
@@ -827,62 +839,27 @@ document.addEventListener('DOMContentLoaded', () => {
 
   globalSearch.addEventListener('input', () => applyFilters());
 
+  // Initialisation directe sans grist.onRecords pour éviter l'envoi JSON massif par Grist
   grist.ready({ requiredAccess: 'full', allowSelectBy: true });
 
-  async function initData(records, tableId) {
-    allRecords = records || [];
-    tagColumns = {};
-    selectColumns = {};
-    textColumns = {};
-
-    if (tableId) {
-      window._currentStorageKey = `${STORAGE_KEY}_${tableId}`;
-    }
-
+  async function bootstrap() {
     try {
-      await fetchColumnsAndTypes(allRecords);
-    } catch (error) {
-      console.error('Impossible de récupérer les métadonnées :', error);
-    }
-
-    await restoreAllState();
-  }
-
-  async function forceLoadTable() {
-    if (isInitialized) return;
-    try {
+      resultsCount.textContent = 'Chargement...';
       const tableId = await grist.selectedTable.getTableId();
       if (!tableId) return;
 
-      const raw = await grist.docApi.fetchTable(tableId);
-      if (!raw || !raw.id || raw.id.length === 0) return;
+      window._currentStorageKey = `${STORAGE_KEY}_${tableId}`;
+      rawTable = await grist.docApi.fetchTable(tableId);
+      if (!rawTable || !rawTable.id) return;
 
-      const cols = Object.keys(raw).filter(k => k !== 'id' && k !== 'manualSort' && !k.startsWith('gristHelper'));
-      const records = new Array(raw.id.length);
-      for (let i = 0; i < raw.id.length; i++) {
-        const rec = { id: raw.id[i] };
-        for (let c = 0; c < cols.length; c++) {
-          rec[cols[c]] = raw[cols[c]][i];
-        }
-        records[i] = rec;
-      }
-
-      isInitialized = true;
-      await initData(records, tableId);
+      rowCount = rawTable.id.length;
+      await fetchColumnsAndTypes(tableId, rawTable);
+      await restoreAllState();
     } catch (err) {
-      console.error('Erreur chargement direct :', err);
+      console.error('Erreur chargement :', err);
+      resultsCount.textContent = 'Erreur';
     }
   }
 
-  grist.onRecords(async (records) => {
-    if (records && records.length > 0 && !isInitialized) {
-      isInitialized = true;
-      let tableId = '';
-      try { tableId = await grist.selectedTable.getTableId(); } catch {}
-      await initData(records, tableId);
-    }
-  });
-
-  // Délai réduit à 150ms au lieu de 500ms
-  setTimeout(forceLoadTable, 150);
+  bootstrap();
 });
