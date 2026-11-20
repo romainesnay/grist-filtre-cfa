@@ -218,57 +218,70 @@ document.addEventListener('DOMContentLoaded', () => {
     const panel = document.createElement('div');
     panel.className = 'dd-panel';
     panel.style.display = 'none';
+    let isRendered = false;
 
-    const ddSearch = document.createElement('input');
-    ddSearch.type = 'text';
-    ddSearch.className = 'dd-search';
-    ddSearch.placeholder = 'Filtrer la liste...';
-    ddSearch.addEventListener('input', () => {
-      const q = ddSearch.value.toLowerCase();
-      panel.querySelectorAll('.dd-option').forEach(o => {
-        const matchesSearch = o.dataset.value.toLowerCase().includes(q);
-        const hiddenByFilter = hideUnavailable && o.dataset.unavailable === 'true';
-        o.style.display = (matchesSearch && !hiddenByFilter) ? 'flex' : 'none';
+    const buildPanelOptions = () => {
+      if (isRendered) return;
+      isRendered = true;
+
+      const ddSearch = document.createElement('input');
+      ddSearch.type = 'text';
+      ddSearch.className = 'dd-search';
+      ddSearch.placeholder = 'Filtrer la liste...';
+      ddSearch.addEventListener('input', () => {
+        const q = ddSearch.value.toLowerCase();
+        panel.querySelectorAll('.dd-option').forEach(o => {
+          const matchesSearch = o.dataset.value.toLowerCase().includes(q);
+          const hiddenByFilter = hideUnavailable && o.dataset.unavailable === 'true';
+          o.style.display = (matchesSearch && !hiddenByFilter) ? 'flex' : 'none';
+        });
       });
-    });
-    panel.appendChild(ddSearch);
+      panel.appendChild(ddSearch);
 
-    const frag = document.createDocumentFragment();
-    uniqueValues.forEach(val => {
-      const opt = document.createElement('label');
-      opt.className = 'dd-option';
-      opt.dataset.value = val;
-      opt.dataset.unavailable = 'false';
+      const frag = document.createDocumentFragment();
+      uniqueValues.forEach(val => {
+        const opt = document.createElement('label');
+        opt.className = 'dd-option';
+        opt.dataset.value = val;
+        opt.dataset.unavailable = 'false';
 
-      const cb = document.createElement('input');
-      cb.type = 'checkbox';
-      cb.checked = selectedTags[col].includes(val);
-      cb.addEventListener('change', () => {
-        if (cb.checked) {
-          if (!selectedTags[col].includes(val)) selectedTags[col].push(val);
-        } else {
-          selectedTags[col] = selectedTags[col].filter(v => v !== val);
-        }
-        updateToggleText();
-        applyFilters();
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.checked = selectedTags[col].includes(val);
+        cb.addEventListener('change', () => {
+          if (cb.checked) {
+            if (!selectedTags[col].includes(val)) selectedTags[col].push(val);
+          } else {
+            selectedTags[col] = selectedTags[col].filter(v => v !== val);
+          }
+          updateToggleText();
+          applyFilters();
+        });
+
+        const txt = document.createElement('span');
+        const countStr = counts && counts[val] ? ` (${counts[val]})` : '';
+        txt.textContent = `${val}${countStr}`;
+
+        opt.appendChild(cb);
+        opt.appendChild(txt);
+        frag.appendChild(opt);
       });
-
-      const txt = document.createElement('span');
-      const countStr = counts && counts[val] ? ` (${counts[val]})` : '';
-      txt.textContent = `${val}${countStr}`;
-
-      opt.appendChild(cb);
-      opt.appendChild(txt);
-      frag.appendChild(opt);
-    });
-    panel.appendChild(frag);
+      panel.appendChild(frag);
+    };
 
     ddToggle.addEventListener('click', (e) => {
       e.stopPropagation();
       const open = panel.style.display === 'block';
       document.querySelectorAll('.dd-panel').forEach(p => p.style.display = 'none');
-      panel.style.display = open ? 'none' : 'block';
-      if (!open) ddSearch.focus();
+      if (!open) {
+        buildPanelOptions();
+        if (hasAnyActiveFilter()) updateDisabledOptions(getMatchingIndices());
+        panel.style.display = 'block';
+        const searchInput = panel.querySelector('.dd-search');
+        if (searchInput) searchInput.focus();
+      } else {
+        panel.style.display = 'none';
+      }
     });
 
     updateToggleText();
